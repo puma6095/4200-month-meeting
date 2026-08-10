@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-store">
 <title>教學部各項教學業務報告</title>
 <link rel="icon" href="data:,">
 <style>
@@ -19,21 +20,23 @@
 <body>
 
 <div id="load">系統載入中…</div>
-
-<iframe
-  id="app"
-  src="https://script.google.com/macros/s/AKfycbzlr2kqRnQfenNxDwizJ-gkKkgolNhxoAo2iTNv9EQZuknJYNHHnZqDneY4IWaZq65S7Q/exec"
-  onload="document.getElementById('load').style.display='none'"
-  allow="clipboard-write"></iframe>
+<iframe id="app" allow="clipboard-write"></iframe>
 
 <div id="tip" style="display:none">
   若畫面空白，請改用
-  <a href="https://script.google.com/macros/s/AKfycbzlr2kqRnQfenNxDwizJ-gkKkgolNhxoAo2iTNv9EQZuknJYNHHnZqDneY4IWaZq65S7Q/exec">這個連結</a>
+  <a id="fallback" href="#">這個連結</a>
   直接開啟。
 </div>
 
 <script>
-  // 8 秒仍未載入時，顯示備援連結
+  var APP_URL = "https://script.google.com/macros/s/AKfycbzlr2kqRnQfenNxDwizJ-gkKkgolNhxoAo2iTNv9EQZuknJYNHHnZqDneY4IWaZq65S7Q/exec";
+
+  // 每次載入都加上不同參數，避免瀏覽器沿用舊版畫面
+  var frame = document.getElementById('app');
+  frame.onload = function () { document.getElementById('load').style.display = 'none'; };
+  frame.src = APP_URL + '?v=' + Date.now();
+  document.getElementById('fallback').href = APP_URL;
+
   setTimeout(function () {
     if (document.getElementById('load').style.display !== 'none') {
       document.getElementById('tip').style.display = 'block';
