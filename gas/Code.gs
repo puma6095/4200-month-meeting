@@ -527,6 +527,31 @@ function api_upload(hrRaw, unit, fileName, mimeType, b64) {
   return { ok: true, entry: mineEntry_(hr, unit) };
 }
 
+/** 附件網址：只收 http(s)，並避開欄位分隔符號「|」 */
+function cleanLink_(url, title) {
+  url = s_(url).replace(/\|/g, '%7C');
+  if (!/^https?:\/\/[^\s"'<>]+$/i.test(url)) return null;
+  return { n: s_(title).replace(/\|/g, '｜') || url, url: url };
+}
+
+/** 新增網址附件（與上傳檔案共用 5 個名額） */
+function api_addLink(hrRaw, unit, url, title) {
+  const hr = upper_(hrRaw);
+  const people = loadPeople_();
+  if (!people[hr] || people[hr].own.indexOf(unit) < 0) return { ok: false, msg: '權限不足。' };
+  const link = cleanLink_(url, title);
+  if (!link) return { ok: false, msg: '請輸入以 http:// 或 https:// 開頭的完整網址。' };
+
+  const cur = loadReports_(ym_())[unit + '|' + hr] || {};
+  const names = s_(cur.fileName) ? cur.fileName.split('|') : [];
+  const urls  = s_(cur.fileUrl)  ? cur.fileUrl.split('|')  : [];
+  if (names.length >= 5) return { ok: false, msg: '每個區塊最多 5 個附件。' };
+  names.push(link.n);
+  urls.push(link.url);
+  writeReport_(ym_(), unit, hr, { fileName: names.join('|'), fileUrl: urls.join('|'), by: hr });
+  return { ok: true, entry: mineEntry_(hr, unit) };
+}
+
 function api_deleteFile(hrRaw, unit, index) {
   const hr = upper_(hrRaw);
   const cur = loadReports_(ym_())[unit + '|' + hr];
@@ -647,6 +672,12 @@ function api_overview(hrRaw) {
   }));
 
   return { ok: true, ym: ymNow, data: data, tracks: tracks, preview: false };
+}
+
+/** 匯出用：網址附件一併列出連結，上傳到雲端硬碟的檔案只列檔名 */
+function fileLabel_(f) {
+  return (f.url && f.url.indexOf('https://drive.google.com/file/d/') !== 0 && f.n !== f.url)
+    ? f.n + '（' + f.url + '）' : f.n;
 }
 
 function fileList_(b) {
@@ -958,6 +989,30 @@ function api_uploadTrackFile(hrRaw, id, fileName, mimeType, b64) {
   return { ok: true, files: names.map((n, i) => ({ n: n, url: urls[i] })) };
 }
 
+/** 新增追蹤事項網址附件（負責人或管理者） */
+function api_addTrackLink(hrRaw, id, url, title) {
+  const hr = upper_(hrRaw);
+  const me = loadPeople_()[hr];
+  if (!me) return { ok: false, msg: '權限不足。' };
+  const idx = ensureTrackCols_();
+  const t = trackRow_(id);
+  if (!t) return { ok: false, msg: '找不到該事項。' };
+  if (!isOwner_(t['負責人員'], me.name) && me.role !== '管理者') {
+    return { ok: false, msg: '這不是指派給你的事項。' };
+  }
+  const link = cleanLink_(url, title);
+  if (!link) return { ok: false, msg: '請輸入以 http:// 或 https:// 開頭的完整網址。' };
+  const cur = trackFiles_(t);
+  if (cur.length >= 5) return { ok: false, msg: '每筆事項最多 5 個附件。' };
+
+  cur.push(link);
+  const sh = sheet_(CFG.SH_TRACK);
+  sh.getRange(t._row, idx['附件檔名']).setValue(cur.map(f => f.n).join('|'));
+  sh.getRange(t._row, idx['附件連結']).setValue(cur.map(f => f.url).join('|'));
+  invalidate_(CFG.SH_TRACK);
+  return { ok: true, files: cur };
+}
+
 function api_deleteTrackFile(hrRaw, id, index) {
   const hr = upper_(hrRaw);
   const me = loadPeople_()[hr];
@@ -1165,7 +1220,7 @@ function api_export(hrRaw) {
         ? ps.map(x => (x.who ? '【' + x.who + '】\n' : '') + x.text).join('\n')
         : '';
       const fs = trackFiles_(r);
-      if (fs.length) txt += (txt ? '\n' : '') + fs.map(f => '附件：' + f.n).join('\n');
+      if (fs.length) txt += (txt ? '\n' : '') + fs.map(f => '附件：' + fileLabel_(f)).join('\n');
       tr.push([s_(r['事項內容']), txt, owners_(r['負責人員']).join('、')]);
     });
   if (tr.length === 1) tr.push(['（無）', '', '']);
@@ -1182,7 +1237,7 @@ function api_export(hrRaw) {
     if (!blocks.length) { rt.push([u, '', (owners[u] || []).map(i => people[i].name).join('、')]); return; }
     const text = blocks.map(b => {
       const head = b.item ? ('【' + b.item + '】（' + b.name + '）\n') : ('【' + b.name + '】\n');
-      const files = fileList_(b).map(f => '　附件：' + f.n).join('\n');
+      const files = fileList_(b).map(f => '　附件：' + fileLabel_(f)).join('\n');
       return head + b.text + (files ? '\n' + files : '');
     }).join('\n\n');
     rt.push([u, text, blocks.map(b => b.name).join('、')]);
@@ -1354,6 +1409,8 @@ textarea.short{min-height:76px}
 .files{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .fchip{display:inline-flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--line);border-radius:99px;padding:5px 12px;font-size:13px;color:var(--soft)}
 .fchip a{color:var(--pri);text-decoration:none}
+.lnk{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
+.lnk .tin{flex:1 1 220px;max-width:none;padding:7px 12px;font-size:13.5px}
 .fchip .fx{background:none;border:0;color:var(--faint);cursor:pointer;font-size:15px;line-height:1;padding:0 2px}
 .state{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-radius:10px;padding:9px 14px;margin-top:18px;font-size:13px}
 .state.ok{background:var(--ok-t);color:var(--ok);border:1px solid #cfe6dc}
@@ -1562,9 +1619,16 @@ td.p{color:var(--soft);font-size:13.5px}
           <button class="mini" onclick="cancelCopy()">取消</button>
         </div>
         <textarea id="ta" placeholder="條列本月進行中的業務、專案與活動"></textarea>
-        <div class="colabel">附件（選填，簡報、海報等，最多 5 個；報告時可直接點開）</div>
+        <div class="colabel">附件（選填，簡報、海報或網址等，最多 5 個；報告時可直接點開）</div>
         <div><button class="mini" id="upbtn" onclick="document.getElementById('fileinput').click()">＋ 上傳檔案</button>
+          <button class="mini" onclick="openLink()">＋ 新增網址</button>
           <input type="file" id="fileinput" multiple class="hide" onchange="addFiles(this)"></div>
+        <div class="lnk hide" id="linkbar">
+          <input id="linkurl" class="tin" placeholder="貼上網址，例如 https://..." autocomplete="off" onkeydown="if(event.key==='Enter')addLink()">
+          <input id="linkname" class="tin" placeholder="顯示名稱（選填，例如：活動報名表單）" autocomplete="off" onkeydown="if(event.key==='Enter')addLink()">
+          <button class="mini" onclick="addLink()">加入</button>
+          <button class="mini" onclick="closeLink()">取消</button>
+        </div>
         <div id="filelist"></div>
         <details class="prevwrap hide" id="prevwrap"><summary>查看上月原始內容</summary><div class="prev" id="prevbox"></div></details>
         <div class="colabel">本月協同人員（點選加入或移除，可複選。已帶入上月選擇；被選到的人可登入檢視本組內容，但不能修改）</div>
@@ -1881,7 +1945,13 @@ function renderReport(){
       '<div class="tkfiles" id="tf'+x.id+'">'+fileChips(x.files,true,x.id)+'</div>'+
       '<div class="rowend"><button class="btn sm gh" onclick="saveTrack('+x.id+')">儲存回覆</button>'+
       '<button class="mini" id="tub'+x.id+'" onclick="pickTrackFile('+x.id+')">＋ 上傳檔案</button>'+
-      '<span class="saved" id="tm'+x.id+'"></span></div></div>';
+      '<button class="mini" onclick="openTrackLink('+x.id+')">＋ 新增網址</button>'+
+      '<span class="saved" id="tm'+x.id+'"></span></div>'+
+      '<div class="lnk hide" id="tlb'+x.id+'">'+
+      '<input id="tlu'+x.id+'" class="tin" placeholder="貼上網址，例如 https://..." autocomplete="off" onkeydown="if(event.key===\'Enter\')addTrackLink('+x.id+')">'+
+      '<input id="tln'+x.id+'" class="tin" placeholder="顯示名稱（選填）" autocomplete="off" onkeydown="if(event.key===\'Enter\')addTrackLink('+x.id+')">'+
+      '<button class="mini" onclick="addTrackLink('+x.id+')">加入</button>'+
+      '<button class="mini" onclick="closeTrackLink('+x.id+')">取消</button></div></div>';
   }).join("");
 
   $("editcard").classList.toggle("hide",BOOT.mine.length===0);
@@ -1934,11 +2004,12 @@ function filesOf(b){
   var u=b.fileUrl?String(b.fileUrl).split("|"):[];
   return n.map(function(x,i){return {n:x,url:u[i]||""};});
 }
+function fIcon(f){return /^https:\/\/drive\.google\.com\/file\/d\//.test(f.url||"")?"📎":"🔗";}
 function fileChips(list,removable,tid){
   if(!list||!list.length)return "";
   return '<div class="files">'+list.map(function(f,i){
     var rm=(tid!==undefined)?'delTrackFile('+tid+','+i+')':'delFile('+i+')';
-    return '<span class="fchip">📎 <a href="'+esc(f.url)+'" target="_blank">'+esc(f.n)+'</a>'+
+    return '<span class="fchip">'+fIcon(f)+' <a href="'+esc(f.url)+'" target="_blank">'+esc(f.n)+'</a>'+
       (removable?'<button class="fx" onclick="'+rm+'">×</button>':'')+'</span>';
   }).join("")+'</div>';
 }
@@ -2075,6 +2146,22 @@ function upload1(f){
     fr.readAsDataURL(f);
   });
 }
+function openLink(){
+  $("linkbar").classList.remove("hide");
+  $("linkurl").focus();
+}
+function closeLink(){
+  $("linkurl").value="";$("linkname").value="";
+  $("linkbar").classList.add("hide");
+}
+function addLink(){
+  var url=$("linkurl").value.trim();
+  if(!/^https?:\/\//i.test(url)){alert("請輸入以 http:// 或 https:// 開頭的完整網址。");$("linkurl").focus();return;}
+  call("api_addLink",ME.hr,curUnit,url,$("linkname").value.trim()).then(function(r){
+    if(!r.ok){alert(r.msg);return;}
+    closeLink();applyEntry(r.entry);
+  })["catch"](fail);
+}
 function delFile(i){
   call("api_deleteFile",ME.hr,curUnit,i).then(function(r){applyEntry(r.entry);})["catch"](fail);
 }
@@ -2110,6 +2197,27 @@ function uploadTrackFile(inp){
   };
   fr.onerror=function(){btn.disabled=false;m.classList.add("bad");m.textContent="讀取檔案失敗。";};
   fr.readAsDataURL(f);
+}
+function openTrackLink(id){
+  $("tlb"+id).classList.remove("hide");
+  $("tlu"+id).focus();
+}
+function closeTrackLink(id){
+  $("tlu"+id).value="";$("tln"+id).value="";
+  $("tlb"+id).classList.add("hide");
+}
+function addTrackLink(id){
+  var url=$("tlu"+id).value.trim(),m=$("tm"+id);
+  if(!/^https?:\/\//i.test(url)){m.classList.add("bad");m.textContent="請輸入以 http:// 或 https:// 開頭的完整網址。";$("tlu"+id).focus();return;}
+  call("api_addTrackLink",ME.hr,id,url,$("tln"+id).value.trim()).then(function(r){
+    if(!r.ok){m.classList.add("bad");m.textContent=r.msg;return;}
+    m.classList.remove("bad");m.textContent="網址已加入。";
+    closeTrackLink(id);
+    $("tf"+id).innerHTML=fileChips(r.files,true,id);
+    for(var i=0;i<BOOT.tracks.length;i++){
+      if(String(BOOT.tracks[i].id)===String(id))BOOT.tracks[i].files=r.files;
+    }
+  })["catch"](fail);
 }
 function delTrackFile(id,i){
   call("api_deleteTrackFile",ME.hr,id,i).then(function(r){
@@ -2321,7 +2429,7 @@ function renderAdmin(){
         ? t.replies.map(function(p){return (p.who?'<b>'+esc(p.who)+'</b>：':'')+esc(p.text);}).join("<br>")
         : "—")+
       ((t.files&&t.files.length)?'<div class="tfs">'+t.files.map(function(f){
-        return '📎 <a href="'+esc(f.url)+'" target="_blank">'+esc(f.n)+'</a>';}).join('<br>')+'</div>':'')+
+        return fIcon(f)+' <a href="'+esc(f.url)+'" target="_blank">'+esc(f.n)+'</a>';}).join('<br>')+'</div>':'')+
       '</td>'+
       '<td class="acts">'+(done
         ? '<button class="mini" onclick="closeTrack('+t.id+',false)">重新開啟</button>'
@@ -2457,7 +2565,7 @@ function pdraw(){
         ((o.co&&o.co.length)?'<span class="pco">協同　'+esc(o.co.join("、"))+'</span>':'')+'</div>'+
         '<div class="pt">'+fmtBody(o.text)+'</div>'+
         (o.files&&o.files.length?'<div class="pf">'+o.files.map(function(f){
-          return '📎 <a href="'+esc(f.url)+'" target="_blank">'+esc(f.n)+'</a>';}).join('　')+'</div>':'')+
+          return fIcon(f)+' <a href="'+esc(f.url)+'" target="_blank">'+esc(f.n)+'</a>';}).join('　')+'</div>':'')+
         '</div>';
     }).join("");
     $("pb").className="body";
@@ -2487,7 +2595,7 @@ function drawTracks(){
           }).join("")
         : '<div class="tkr empty">尚未回覆</div>')+
       ((x.files&&x.files.length)?'<div class="pf">'+x.files.map(function(f){
-        return '📎 <a href="'+esc(f.url)+'" target="_blank">'+esc(f.n)+'</a>';}).join('　')+'</div>':'')+
+        return fIcon(f)+' <a href="'+esc(f.url)+'" target="_blank">'+esc(f.n)+'</a>';}).join('　')+'</div>':'')+
       '</div>';
   }).join("");
   $("pb").className="body";
