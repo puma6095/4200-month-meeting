@@ -178,7 +178,7 @@ function ensureStaffCols_() {
   }
   return idx;
 }
-function ended_(r) { return s_(r['業務狀態']) === '已結束'; }
+function ended_(r) { const v = s_(r['業務狀態']); return v === '已結束' || v === '已離職'; }
 
 /** 回傳 { 人事號: {hr,name,mail,role,own:[],view:[],quarterUnits:[]} } */
 function loadPeople_() {
@@ -1139,6 +1139,30 @@ function api_endUnit(hrRaw, unit) {
   invalidate_(CFG.SH_STAFF);
   if (!hit) return { ok: false, msg: '找不到這項業務。' };
   return { ok: true, msg: '已結束「' + unit + '」，不會再出現在填報與部務會議報告中。歷史紀錄仍保留。' };
+}
+
+/** 管理者標記同仁離職：名冊中此人所有業務列標為「已離職」，不再能登入、填報或被催繳，歷史紀錄保留 */
+function api_staffLeave(hrRaw, targetHr) {
+  if (!isAdmin_(hrRaw)) return { ok: false, msg: '權限不足。' };
+  const target = upper_(targetHr);
+  if (target === upper_(hrRaw)) return { ok: false, msg: '不能將自己標記為離職。' };
+  const idx = ensureStaffCols_();
+  const sh = sheet_(CFG.SH_STAFF);
+  let name = '', n = 0;
+  readTable_(CFG.SH_STAFF).forEach(r => {
+    if (upper_(r['人事號']) !== target || ended_(r)) return;
+    sh.getRange(r._row, idx['業務狀態']).setValue('已離職');
+    name = name || s_(r['姓名']);
+    n++;
+  });
+  invalidate_(CFG.SH_STAFF);
+  if (!n) return { ok: false, msg: '名冊中找不到這位同仁的業務。' };
+
+  // 每季報告單位的主管另記在「單位對照表」，需人工改派
+  const quarterly = readTable_(CFG.SH_UNIT)
+    .filter(r => upper_(r['報告主管人事號']) === target).map(r => s_(r['單位名稱']));
+  return { ok: true, msg: '已將 ' + name + ' 標記為離職，試算表「' + CFG.SH_STAFF + '」已同步更新（' + n + ' 項業務）。' +
+    (quarterly.length ? '另請到「' + CFG.SH_UNIT + '」改派：' + quarterly.join('、') + '。' : '') };
 }
 
 /** 管理者移除同仁自行新增的業務（一併刪除名冊那一列） */
@@ -2403,9 +2427,10 @@ function renderAdmin(){
       '<td class="p">'+(esc(x.item)||"—")+'</td>'+
       '<td><span class="dot '+d+'"></span>'+esc(x.status)+'</td>'+
       '<td class="p">'+(esc(x.at)||"—")+'</td>'+
-      '<td>'+((x.status==="已送出"||x.status==="本月無業務")?"—":
-        '<button class="mini" onclick="remindOne(\''+x.unit+'\',\''+x.hr+'\')">寄送催繳</button>'+
-        (x.noted?'<div class="noted">已於 '+esc(x.noted)+' 通知</div>':''))+'</td></tr>';
+      '<td class="acts">'+((x.status==="已送出"||x.status==="本月無業務")?"":
+        '<button class="mini" onclick="remindOne(\''+x.unit+'\',\''+x.hr+'\')">寄送催繳</button>')+
+        (x.hr!==ME.hr?'<button class="mini danger" onclick="staffLeave(\''+x.hr+'\',\''+esc(x.name)+'\')">離職移除</button>':'')+
+        ((x.status!=="已送出"&&x.status!=="本月無業務"&&x.noted)?'<div class="noted">已於 '+esc(x.noted)+' 通知</div>':'')+'</td></tr>';
   }).join("");
 
   $("reqcount").textContent=r.requests.length
@@ -2441,6 +2466,14 @@ function renderAdmin(){
 function remindOne(unit,hr){
   call("api_remindOne",ME.hr,unit,hr).then(function(r){
     $("admmsg").textContent=r.msg;return loadAdmin();
+  })["catch"](fail);
+}
+function staffLeave(hr,name){
+  if(!confirm("確定將「"+name+"」標記為離職？\n\n此人負責的所有業務都會從填報、投影與催繳中移除，也無法再登入；試算表會同步標記為「已離職」，歷史紀錄保留。"))return;
+  $("admmsg").textContent="處理中…";
+  call("api_staffLeave",ME.hr,hr).then(function(r){
+    if(!r.ok){alert(r.msg);$("admmsg").textContent="";return;}
+    return loadAdmin().then(function(){$("admmsg").textContent=r.msg;});
   })["catch"](fail);
 }
 function remindAll(){
