@@ -637,11 +637,8 @@ function api_overview(hrRaw) {
     })
   }));
   const ymNow = ym_();
-  const tracks = readTable_(CFG.SH_TRACK).filter(r => {
-    const st = s_(r['狀態']);
-    if (st !== '已結案') return true;
-    return s_(r['結案時間']).indexOf(ymNow.replace('-', '/')) === 0;   // 本月才結案的仍列出
-  }).map(r => ({
+  // 已結案事項移至「歷年紀錄」保存，會議投影只列未結案者
+  const tracks = readTable_(CFG.SH_TRACK).filter(r => s_(r['狀態']) !== '已結案').map(r => ({
     q: s_(r['事項內容']), owner: owners_(r['負責人員']).join('、'),
     replies: parseReply_(r['回覆執行進度']),
     files: trackFiles_(r),
@@ -1001,11 +998,26 @@ function api_myHistory(hrRaw, year) {
   const mine = readTable_(CFG.SH_REPORT)
     .filter(r => upper_(r['主責人事號']) === hr && s_(r['狀態']) === '已送出' && s_(r['本月業務內容']));
 
+  // 已結案的追蹤事項：主管與管理者看全部，其他同仁看指派給自己的
+  const thisYear = String(new Date().getFullYear() - 1911);
+  const seeAll = (me.role === '主管' || me.role === '管理者');
+  const closedAll = readTable_(CFG.SH_TRACK)
+    .filter(r => s_(r['狀態']) === '已結案' && (seeAll || isOwner_(r['負責人員'], me.name)))
+    .map(r => {
+      const at = s_(r['結案時間']);
+      return { q: s_(r['事項內容']), from: s_(r['來源會議']),
+               owner: owners_(r['負責人員']).join('、'),
+               replies: parseReply_(r['回覆執行進度']),
+               files: trackFiles_(r),
+               at: at, y: at.split('/')[0] || thisYear };   // 舊資料無結案時間，歸入今年
+    });
+
   const years = [];
   mine.forEach(r => {
     const y = s_(r['年月']).split('-')[0];
     if (y && years.indexOf(y) < 0) years.push(y);
   });
+  closedAll.forEach(t => { if (years.indexOf(t.y) < 0) years.push(t.y); });
   years.sort().reverse();
 
   const pick = s_(year) || years[0] || String(new Date().getFullYear() - 1911);
@@ -1041,9 +1053,12 @@ function api_myHistory(hrRaw, year) {
                  status: s_(r['狀態']) || '待回覆' }))
     .filter(t => t.reply);
 
+  const closed = closedAll.filter(t => t.y === pick)
+    .sort((a, b) => b.at.localeCompare(a.at));
+
   return { ok: true, name: me.name, years: years, year: pick,
            months: order.map(ym => ({ ym: ym, items: byYm[ym] })),
-           units: units, tracks: tracks,
+           units: units, tracks: tracks, closed: closed,
            active: me.own.slice() };
 }
 
@@ -2180,7 +2195,7 @@ function renderHist(){
     $("histyears").innerHTML="";$("histunits").innerHTML="";$("histlist").innerHTML="";
     return;
   }
-  $("histnote").textContent="這裡整理你歷年送出的業務報告，含已結束的業務，可作為年度回顧使用。";
+  $("histnote").textContent="這裡整理你歷年送出的業務報告（含已結束的業務）與已結案的追蹤事項，可作為年度回顧使用。";
   $("histyears").innerHTML=r.years.map(function(y){
     return '<button class="'+(y===r.year?"on":"")+'" onclick="loadHist(\''+y+'\')">'+esc(y)+' 年</button>';
   }).join("");
@@ -2203,7 +2218,24 @@ function renderHist(){
           (it.co?'<div class="him">協同　'+esc(it.co)+'</div>':'')+
           '</div>';
       }).join("")+'</div>';
-  }).join("");
+  }).join("")+histClosed(r.closed||[]);
+}
+function histClosed(list){
+  if(!list.length)return "";
+  return '<div class="hm"><div class="hmy">已結案追蹤事項</div>'+
+    list.map(function(t){
+      return '<div class="hi2"><div class="hiu"><span class="pill c">已結案</span>　'+esc(t.q)+'</div>'+
+        ((t.replies&&t.replies.length)
+          ? t.replies.map(function(p){
+              return '<div class="hib">'+(p.who?'<b>'+esc(p.who)+'</b>':'')+fmtBody(p.text)+'</div>';
+            }).join("")
+          : '<div class="hib">（無回覆內容）</div>')+
+        (t.files&&t.files.length?fileChips(t.files,false):"")+
+        '<div class="him">負責　'+esc(t.owner||"—")+
+          (t.from?'　·　來源　'+esc(t.from):'')+
+          '　·　結案　'+esc(t.at||"—")+'</div>'+
+        '</div>';
+    }).join("")+'</div>';
 }
 function loadOver(){
   return call("api_overview",ME.hr).then(function(r){
@@ -2385,15 +2417,18 @@ function projUnits(){
     return u.owners.some(function(o){return o.status==="已送出"&&o.text;});
   });
 }
-function pageCount(){return 1+projUnits().length;}
+/* 有未結案追蹤事項才放第一頁；全部結案就直接從業務報告開始 */
+function trackPages(){return (OVER&&OVER.tracks&&OVER.tracks.length)?1:0;}
+function pageCount(){return Math.max(1,trackPages()+projUnits().length);}
 function pmove(d){
   var n=pageCount();if(!n)return;
   pIdx=(pIdx+d+n)%n;pdraw();
 }
 function pdraw(){
-  if(pIdx===0){drawTracks();$("ppg").textContent="1 / "+pageCount();return;}
+  var tp=trackPages();
+  if(tp&&pIdx===0){drawTracks();$("ppg").textContent="1 / "+pageCount();return;}
   var list=projUnits();
-  var u=list[pIdx-1];
+  var u=list[pIdx-tp];
   if(!u){
     $("pu").textContent="本月沒有已送出的業務報告";
     $("po").textContent="";
