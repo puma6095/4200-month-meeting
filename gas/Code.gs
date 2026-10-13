@@ -835,16 +835,47 @@ function api_notifyManagers(hrRaw) {
   if (!isAdmin_(hrRaw)) return { ok: false, msg: '權限不足。' };
   const people = loadPeople_();
   const url = ScriptApp.getService().getUrl();
+  const subject = '【教學部】' + ym_() + ' 各項教學業務報告已彙整完成';
   const mgrs = Object.keys(people).filter(k => people[k].role === '主管');
+  const sent = [], failed = [];
   mgrs.forEach(k => {
-    MailApp.sendEmail({
-      to: people[k].mail,
-      subject: '【教學部】' + ym_() + ' 各項教學業務報告已彙整完成',
-      body: people[k].name + ' 您好：\n\n本月各組業務報告已彙整完成，可直接進入系統檢視：\n' + url +
-            '\n\n— 教學部各項教學業務報告系統（系統自動發送，請勿直接回覆）'
-    });
+    const who = people[k].name + '（' + people[k].mail + '）';
+    try {
+      MailApp.sendEmail({
+        to: people[k].mail,
+        subject: subject,
+        body: people[k].name + ' 您好：\n\n本月各組業務報告已彙整完成，可直接進入系統檢視：\n' + url +
+              '\n\n— 教學部各項教學業務報告系統（系統自動發送，請勿直接回覆）'
+      });
+      sent.push(who);
+    } catch (e) {
+      failed.push(who + '：' + (e && e.message ? e.message : e));
+    }
   });
-  return { ok: true, msg: '已通知 ' + mgrs.length + ' 位主管。' };
+
+  // 寄送回條給所有管理者，確認主管通知是否成功寄出
+  const admins = Object.keys(people).filter(k => people[k].role === '管理者').map(k => people[k].mail);
+  let receipt = '';
+  if (admins.length) {
+    try {
+      MailApp.sendEmail({
+        to: admins.join(','),
+        subject: '【寄送回條】' + subject,
+        body: '管理者您好：\n\n' + people[upper_(hrRaw)].name + ' 於 ' + nowStr_() +
+              ' 寄出「本月已彙整完成」通知，結果如下：\n\n' +
+              '■ 成功寄出（' + sent.length + ' 位）\n' + (sent.length ? sent.map(x => '・' + x).join('\n') : '（無）') +
+              (failed.length ? '\n\n■ 寄送失敗（' + failed.length + ' 位）\n' + failed.map(x => '・' + x).join('\n') : '') +
+              '\n\n系統網址：' + url +
+              '\n\n— 教學部各項教學業務報告系統（系統自動發送，請勿直接回覆）'
+      });
+      receipt = '回條已寄給管理者。';
+    } catch (e) {
+      receipt = '回條寄送失敗。';
+    }
+  }
+  return { ok: !failed.length,
+           msg: '已通知 ' + sent.length + ' 位主管' +
+                (failed.length ? '，另有 ' + failed.length + ' 位寄送失敗' : '') + '。' + receipt };
 }
 
 function isAdmin_(hrRaw) {
@@ -2482,7 +2513,9 @@ function remindAll(){
   })["catch"](fail);
 }
 function notifyMgr(){
-  call("api_notifyManagers",ME.hr).then(function(r){$("admmsg").textContent=r.msg;})["catch"](fail);
+  call("api_notifyManagers",ME.hr).then(function(r){
+    $("admmsg").classList.toggle("bad",!r.ok);$("admmsg").textContent=r.msg;
+  })["catch"](fail);
 }
 var _rmArm=null;
 function removeUnit(id){
