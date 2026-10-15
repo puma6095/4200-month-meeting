@@ -4,6 +4,8 @@
  *   執行身分：我（承辦人帳號）
  *   具有存取權的使用者：所有人
  * 前端以人事號辨識身分，不需 Google 帳號登入。
+ * 匯出 Word 時若要讓同組別的「組別」欄上下合併，請於編輯器左側
+ *   「服務 ＋」加入 Google Docs API（識別碼 Docs）；未加入時各列會重複顯示組別名稱。
  *******************************************************/
 
 const CFG = {
@@ -1281,31 +1283,88 @@ function api_export(hrRaw) {
   if (tr.length === 1) tr.push(['（無）', '', '']);
   styleTable_(body.appendTable(tr));
 
-  // 貳、業務報告
+  // 貳、業務報告：依負責人員各自一列，同組別的「組別」欄上下合併
   body.appendParagraph('貳、各項教學業務報告').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  const canMerge = typeof Docs !== 'undefined';
   const rt = [['組別／教學業務', '近期進行業務', '負責人員']];
+  const groups = [];
   allUnits_().forEach(u => {
     if (!unitActive_(u, quarter, month)) return;
     const blocks = (owners[u] || [])
       .map(id => cur[u + '|' + id])
       .filter(b => b && b.status === '已送出' && b.text);
+    const g = { unit: u, row: rt.length, span: Math.max(blocks.length, 1) };
+    groups.push(g);
     if (!blocks.length) { rt.push([u, '', (owners[u] || []).map(i => people[i].name).join('、')]); return; }
-    const text = blocks.map(b => {
-      const head = b.item ? ('【' + b.item + '】（' + b.name + '）\n') : ('【' + b.name + '】\n');
+    blocks.forEach((b, i) => {
       const files = fileList_(b).map(f => '　附件：' + fileLabel_(f)).join('\n');
-      return head + b.text + (files ? '\n' + files : '');
-    }).join('\n\n');
-    rt.push([u, text, blocks.map(b => b.name).join('、')]);
+      const text  = (b.item ? '【' + b.item + '】\n' : '') + b.text + (files ? '\n' + files : '');
+      const who   = [b.name].concat(s_(b.coName).split(',').map(s_))
+                      .filter((n, k, a) => n && a.indexOf(n) === k).join('、');
+      rt.push([(i === 0 || !canMerge) ? u : '', text, who]);
+    });
   });
   styleTable_(body.appendTable(rt));
 
   doc.saveAndClose();
+  if (canMerge) {
+    try { mergeUnitCells_(doc.getId(), groups); }
+    catch (e) { fillUnitCells_(doc.getId(), groups); }
+  }
   const file = DriveApp.getFileById(doc.getId());
   subFolder_(ym).addFile(file);
   DriveApp.getRootFolder().removeFile(file);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
   const docx = 'https://docs.google.com/document/d/' + doc.getId() + '/export?format=docx';
   return { ok: true, url: file.getUrl(), docx: docx };
+}
+
+/** 文件中最後一張表格（業務報告表）的 Docs API 結構 */
+function lastDocsTable_(docId) {
+  const els = Docs.Documents.get(docId).body.content.filter(e => e.table);
+  return els[els.length - 1];
+}
+
+/** 以 Docs 進階服務將同組別的「組別」儲存格上下合併 */
+function mergeUnitCells_(docId, groups) {
+  const multi = groups.filter(g => g.span > 1);
+  if (!multi.length) return;
+  const start = lastDocsTable_(docId).startIndex;
+  Docs.Documents.batchUpdate({ requests: multi.map(g => ({
+    mergeTableCells: { tableRange: {
+      tableCellLocation: { tableStartLocation: { index: start }, rowIndex: g.row, columnIndex: 0 },
+      rowSpan: g.span, columnSpan: 1
+    } }
+  })) }, docId);
+
+  // 合併後，空白格的段落會併入首格，刪掉多出的空行
+  try {
+    const t = lastDocsTable_(docId).table;
+    const text = p => (p.paragraph.elements || []).map(e => e.textRun ? e.textRun.content : '').join('');
+    const del = [];
+    multi.forEach(g => {
+      const ps = t.tableRows[g.row].tableCells[0].content.filter(e => e.paragraph);
+      if (ps.length < 2 || ps.slice(1).some(p => text(p).trim())) return;
+      del.push({ startIndex: ps[0].endIndex - 1, endIndex: ps[ps.length - 1].endIndex - 1 });
+    });
+    del.sort((a, b) => b.startIndex - a.startIndex);
+    if (del.length) {
+      Docs.Documents.batchUpdate({ requests: del.map(r => ({ deleteContentRange: { range: r } })) }, docId);
+    }
+  } catch (e) { /* 空行不影響內容，略過 */ }
+}
+
+/** 無法合併時，於每列補上組別名稱 */
+function fillUnitCells_(docId, groups) {
+  const doc = DocumentApp.openById(docId);
+  const tables = doc.getBody().getTables();
+  const t = tables[tables.length - 1];
+  groups.forEach(g => {
+    for (let r = g.row + 1; r < g.row + g.span; r++) {
+      t.getCell(r, 0).setText(g.unit).editAsText().setFontFamily('標楷體').setFontSize(12);
+    }
+  });
+  doc.saveAndClose();
 }
 
 function styleTable_(t) {
@@ -1382,6 +1441,10 @@ function 檢查設定() {
     });
   });
   if (unknown.length) msg.push('✗ 名冊出現不在組別清單中的名稱：' + unknown.join('、'));
+
+  msg.push(typeof Docs !== 'undefined'
+    ? '✓ 已啟用 Google Docs API 服務（匯出 Word 時同組別儲存格會上下合併）'
+    : '△ 未啟用 Google Docs API 服務：匯出 Word 時各列會重複顯示組別名稱（服務 ＋ → Google Docs API）');
 
   const out = msg.join('\n');
   Logger.log(out);
