@@ -32,6 +32,9 @@ const UNIT_ORDER = [
   '視聽中心','圖書館'
 ];
 
+/* 季會（每年 1、4、7、10 月）會議投影時，這些單位排在最前面先報告 */
+const QUARTER_LEAD = { months: [1, 4, 7, 10], units: ['視聽中心', '圖書館', '實證醫學中心'] };
+
 /* ===================================================================
  * 一、基礎工具
  * =================================================================*/
@@ -673,7 +676,10 @@ function api_overview(hrRaw) {
     from: s_(r['來源會議'])
   }));
 
-  return { ok: true, ym: ymNow, data: data, tracks: tracks, preview: false };
+  const lead = QUARTER_LEAD.months.indexOf(month) >= 0
+    ? QUARTER_LEAD.units.filter(u => scope.indexOf(u) >= 0) : [];
+
+  return { ok: true, ym: ymNow, data: data, tracks: tracks, lead: lead, preview: false };
 }
 
 /** 匯出用：網址附件一併列出連結，上傳到雲端硬碟的檔案只列檔名 */
@@ -2648,13 +2654,22 @@ function toggleOrient(){
   $("orbtn").textContent=PORTRAIT?"切換橫式":"切換直式";
 }
 function exitProj(){$("v-proj").classList.add("hide");$("v-app").classList.remove("hide");}
+/* 季會月份：OVER.lead 所列單位排在最前面（追蹤事項之前）先報告 */
 function projUnits(){
   if(!OVER||!OVER.data)return [];
-  return OVER.data.filter(function(u){
+  var list=OVER.data.filter(function(u){
     return u.owners.some(function(o){return o.status==="已送出"&&o.text;});
   });
+  var first=(OVER.lead||[]).map(function(n){
+    return list.filter(function(u){return u.unit===n;})[0];
+  }).filter(Boolean);
+  return first.concat(list.filter(function(u){return first.indexOf(u)<0;}));
 }
-/* 有未結案追蹤事項才放第一頁；全部結案就直接從業務報告開始 */
+function leadCount(){
+  var lead=(OVER&&OVER.lead)||[];
+  return projUnits().filter(function(u){return lead.indexOf(u.unit)>=0;}).length;
+}
+/* 有未結案追蹤事項才放一頁（季會先報告單位之後）；全部結案就直接從業務報告開始 */
 function trackPages(){return (OVER&&OVER.tracks&&OVER.tracks.length)?1:0;}
 function pageCount(){return Math.max(1,trackPages()+projUnits().length);}
 function pmove(d){
@@ -2662,10 +2677,10 @@ function pmove(d){
   pIdx=(pIdx+d+n)%n;pdraw();
 }
 function pdraw(){
-  var tp=trackPages();
-  if(tp&&pIdx===0){drawTracks();$("ppg").textContent="1 / "+pageCount();return;}
+  var tp=trackPages(), lc=leadCount();
+  if(tp&&pIdx===lc){drawTracks();$("ppg").textContent=(pIdx+1)+" / "+pageCount();return;}
   var list=projUnits();
-  var u=list[pIdx-tp];
+  var u=list[pIdx<lc?pIdx:pIdx-tp];
   if(!u){
     $("pu").textContent="本月沒有已送出的業務報告";
     $("po").textContent="";
